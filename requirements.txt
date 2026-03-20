@@ -1,0 +1,11 @@
+torch
+transformers
+spacy
+playwright
+pandas
+pdfplumber
+beautifulsoup4
+
+# To run after installation:
+# python -m spacy download de_core_news_sm
+# playwright install chromium
