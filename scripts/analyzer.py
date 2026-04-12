@@ -362,6 +362,144 @@ def plot_granular_spend_vs_mentions(df_fin, df_nlp):
     plt.close()
     logger.info(f"Generated Plot 6 (Volume Granular Layout): {file_path}")
 
+def plot_newspaper_heatmaps(df_nlp):
+    """Generates two static heatmaps intersecting Newspapers against Ministries for Sentiment and Volume."""
+    if df_nlp.empty: return
+    
+    # Clean the newspaper domain names conceptually (e.g. 'diepresse.com' -> 'Die Presse')
+    domain_map = {
+        'derstandard.at': 'Der Standard',
+        'krone.at': 'Krone',
+        'diepresse.com': 'Die Presse',
+        'heute.at': 'Heute',
+        'kleinezeitung.at': 'Kleine Zeitung'
+    }
+    
+    df_copy = df_nlp.copy()
+    df_copy['outlet_pretty'] = df_copy['outlet'].map(domain_map).fillna(df_copy['outlet'])
+    
+    # Calculate Heatmap Aggregations
+    pivot_sentiment = df_copy.pivot_table(index='outlet_pretty', columns='entity_mentioned', values='sentiment_score', aggfunc='mean')
+    pivot_mentions = df_copy.pivot_table(index='outlet_pretty', columns='entity_mentioned', values='sentiment_score', aggfunc='count')
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 6))
+    
+    sns.heatmap(pivot_sentiment, annot=True, cmap="coolwarm", center=0, ax=ax1, fmt=".2f", linewidths=.5)
+    ax1.set_title("Average Sentiment Bias (Newspaper vs Ministry)", fontsize=14, pad=10)
+    ax1.set_ylabel("Newspaper")
+    ax1.set_xlabel("Ministry")
+    
+    sns.heatmap(pivot_mentions, annot=True, cmap="YlGnBu", ax=ax2, fmt="g", linewidths=.5)
+    ax2.set_title("Absolute Mentions Volume (Newspaper vs Ministry)", fontsize=14, pad=10)
+    ax2.set_ylabel("")
+    ax2.set_xlabel("Ministry")
+    
+    plt.tight_layout()
+    file_path = OUTPUT_DIR / 'newspaper_cross_heatmaps.png'
+    plt.savefig(file_path, dpi=300)
+    plt.close()
+    logger.info(f"Generated Plot 7 (Newspaper Heatmaps): {file_path}")
+
+
+def plot_newspaper_ministry_facetgrid(df_fin, df_nlp):
+    """Generates a comprehensive 5x5 sub-plot grid mapping Newspaper vs Ministry sentiment, overlaid structurally with respective monthly Marketing Spend."""
+    if df_nlp.empty or df_fin.empty: return
+    
+    # 1. PROCESS FINANCIAL SPEND
+    monthly_spend_records = []
+    for _, row in df_fin.iterrows():
+        org = row['organization']
+        amount = row['amount']
+        try:
+            start_dt = pd.to_datetime(row['start_date'], format="%d.%m.%Y")
+            end_dt = pd.to_datetime(row['end_date'], format="%d.%m.%Y")
+            start_period = start_dt.to_period('M')
+            end_period = end_dt.to_period('M')
+            months_active = (end_period - start_period).n + 1
+            if months_active <= 0: months_active = 1
+            monthly_amount = amount / months_active
+            for m in pd.period_range(start_period, end_period, freq='M'):
+                monthly_spend_records.append({'organization': org, 'year_month': m, 'spend': monthly_amount})
+        except:
+            monthly_spend_records.append({'organization': org, 'year_month': pd.Period('2024-01', freq='M'), 'spend': amount})
+
+    spend_df = pd.DataFrame(monthly_spend_records)
+    spend_df = spend_df.groupby(['organization', 'year_month'])['spend'].sum().reset_index()
+    spend_df['spend_millions'] = spend_df['spend'] / 1000000.0
+    spend_df.rename(columns={'organization': 'entity_mentioned'}, inplace=True)
+    
+    # 2. PROCESS SENTIMENT MAP
+    domain_map = {
+        'derstandard.at': 'Der Standard',
+        'krone.at': 'Krone',
+        'diepresse.com': 'Die Presse',
+        'heute.at': 'Heute',
+        'kleinezeitung.at': 'Kleine Zeitung'
+    }
+    df_copy = df_nlp.copy()
+    df_copy['outlet_pretty'] = df_copy['outlet'].map(domain_map).fillna(df_copy['outlet'])
+    heatmap_timeline = df_copy.groupby(['outlet_pretty', 'entity_mentioned', 'year_month'])['sentiment_score'].mean().reset_index()
+    
+    # 3. BUILD 3D CARTESIAN GRID
+    import itertools
+    outlets = df_copy['outlet_pretty'].dropna().unique()
+    ministries = [m for m in df_fin['organization'].unique() if m != '']
+    all_months = pd.period_range(pd.Period("2024-01", freq='M'), pd.Period("2026-01", freq='M'), freq='M')
+    
+    grid_rows = list(itertools.product(outlets, ministries, all_months))
+    grid_df = pd.DataFrame(grid_rows, columns=['outlet_pretty', 'entity_mentioned', 'year_month'])
+    
+    grid_df = pd.merge(grid_df, spend_df, on=['entity_mentioned', 'year_month'], how='left').fillna({'spend_millions': 0.0})
+    grid_df = pd.merge(grid_df, heatmap_timeline, on=['outlet_pretty', 'entity_mentioned', 'year_month'], how='left')
+    grid_df['month_str'] = grid_df['year_month'].astype(str)
+    
+    # 4. PLOT GRID DYNAMICALLY
+    sns.set_theme(style="white")
+    g = sns.FacetGrid(grid_df, row="entity_mentioned", col="outlet_pretty", margin_titles=True, height=2.8, aspect=1.4, sharey="row")
+    
+    def dual_axis_plot(data, **kwargs):
+        ax = plt.gca()
+        if data.empty: return
+        
+        # Ensure month strings order
+        data = data.sort_values(by='month_str')
+        
+        # Primary axis = Spend amount (blue columns)
+        sns.barplot(data=data, x='month_str', y='spend_millions', color='lightblue', alpha=0.6, ax=ax)
+        ax.set_ylabel("")
+        
+        # Secondary axis = Sentiment score
+        ax2 = ax.twinx()
+        sns.lineplot(data=data, x='month_str', y='sentiment_score', color='purple', marker='o', ax=ax2, linewidth=2)
+        ax2.set_ylim(-1.0, 1.0)
+        ax2.axhline(0, color='red', linestyle='--', alpha=0.5)
+        ax2.set_ylabel("")
+        
+        # Sparsify Ticks to prevent overlaps
+        for ind, label in enumerate(ax.get_xticklabels()):
+            if ind % 4 == 0: label.set_visible(True)
+            else: label.set_visible(False)
+        ax.tick_params(axis='x', rotation=45)
+        
+        # Hide internal secondary Y limits
+        if not ax.get_subplotspec().is_last_col():
+            ax2.set_yticks([])
+        else:
+            ax2.set_ylabel("Sentiment")
+    
+    g.map_dataframe(dual_axis_plot)
+    g.set_axis_labels("", "")
+    g.set_titles(row_template="{row_name}", col_template="{col_name}")
+    g.fig.suptitle("Temporal 5x5 Grid: Campaign Budget vs Media Sentiment per Newspaper per Ministry", fontsize=18, y=1.02)
+    
+    plt.tight_layout()
+    file_path = OUTPUT_DIR / 'newspaper_5x5_facetgrid.png'
+    g.savefig(file_path, dpi=300)
+    plt.close()
+    
+    sns.set_theme(style="whitegrid")
+    logger.info(f"Generated Plot 8 (3D 5x5 Overlay FacetGrid): {file_path}")
+
 def main():
     logger.info("Initializing Data Analysis reporting node...")
     df_fin, df_nlp = fetch_data()
@@ -378,6 +516,8 @@ def main():
     plot_spend_vs_sentiment(df_fin, df_nlp)
     plot_granular_spend_vs_sentiment(df_fin, df_nlp)
     plot_granular_spend_vs_mentions(df_fin, df_nlp)
+    plot_newspaper_heatmaps(df_nlp)
+    plot_newspaper_ministry_facetgrid(df_fin, df_nlp)
     
     logger.info("Analysis visual pipeline completed successfully.")
 
