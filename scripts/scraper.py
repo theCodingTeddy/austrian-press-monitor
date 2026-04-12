@@ -81,29 +81,60 @@ def save_article_to_db(db_path, outlet, url, article_data):
 def fetch_google_news_rss(site_domain: str, keywords: List[str], start_date: str, end_date: str) -> List[Tuple[str, str]]:
     """Uses Google News RSS to find articles matching the keywords on the given domain."""
     links_data = set()
-    # Batch keywords by groups of 3 to avoid making 15+ requests per newspaper
-    for i in range(0, len(keywords), 3):
-        batch = keywords[i:i+3]
-        query_parts = " OR ".join([f'"{kw}"' for kw in batch])
-        query = f'({query_parts}) site:{site_domain} after:{start_date} before:{end_date}'
-        encoded_query = urllib.parse.quote_plus(query)
-        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=de&gl=AT&ceid=AT:de"
+    
+    from datetime import datetime
+    import urllib.parse
+    import urllib.request
+    
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    # Chunk timeline month by month to bypass Google News's ~100 article hard cap per search query
+    intervals = []
+    current = start_dt
+    while current < end_dt:
+        # Jump to the 1st of the next month safely
+        year = current.year + (current.month // 12)
+        month = (current.month % 12) + 1
+        next_month = datetime(year, month, 1)
         
-        req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                xml_data = response.read()
-                root = ET.fromstring(xml_data)
-                for item in root.findall('.//item'):
-                    link = item.find('link')
-                    pub_date = item.find('pubDate')
-                    if link is not None and link.text:
-                        pdate = pub_date.text if pub_date is not None else ""
-                        links_data.add((link.text, pdate))
-        except Exception as e:
-            logger.error(f"RSS fetch failed for {batch} on {site_domain}: {e}")
+        if next_month > end_dt:
+            intervals.append((current.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")))
+        else:
+            intervals.append((current.strftime("%Y-%m-%d"), next_month.strftime("%Y-%m-%d")))
             
-        time.sleep(1) # Be nice to Google
+        current = next_month
+
+    # Contextual keywords guarantee that acronyms (e.g. 'BMI' meaning Body Mass Index or 'BKA' meaning local theater) are excluded
+    context_filter = '("Politik" OR "Regierung" OR "Ministerium" OR "Inland" OR "Österreich")'
+    
+    for start_int, end_int in intervals:
+        # Batch keywords by groups of 3 to avoid excessive max-character limits
+        for i in range(0, len(keywords), 3):
+            batch = keywords[i:i+3]
+            query_parts = " OR ".join([f'"{kw}"' for kw in batch])
+            
+            # Formulate query: (KW1 OR KW2 OR KW3) AND (Context) site:domain after:X before:Y
+            query = f'({query_parts}) AND {context_filter} site:{site_domain} after:{start_int} before:{end_int}'
+            encoded_query = urllib.parse.quote_plus(query)
+            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=de&gl=AT&ceid=AT:de"
+            
+            req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    xml_data = response.read()
+                    root = ET.fromstring(xml_data)
+                    for item in root.findall('.//item'):
+                        link = item.find('link')
+                        pub_date = item.find('pubDate')
+                        if link is not None and link.text:
+                            pdate = pub_date.text if pub_date is not None else ""
+                            links_data.add((link.text, pdate))
+            except Exception as e:
+                logger.error(f"RSS fetch failed for {batch} on {site_domain} [{start_int} to {end_int}]: {e}")
+                
+            import time
+            time.sleep(1) # Be nice to Google
         
     return list(links_data)
 
@@ -241,7 +272,7 @@ def main():
     }
     
     START_DATE = "2024-01-01"
-    END_DATE = "2026-03-20"
+    END_DATE = "2026-01-31"
     
     # Flatten the keywords for search
     all_keywords = []
