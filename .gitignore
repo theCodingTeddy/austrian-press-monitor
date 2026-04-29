@@ -1,14 +1,8 @@
 # Environments
 .venv/
 
-# Data & Databases
-data/
-*.db
-*.sqlite
-*.csv
-
-# Models
-models/
+# Database
+data/*.db
 
 # Python cache
 __pycache__/
