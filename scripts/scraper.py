@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Student Research Project - Sentiment Analysis of Austrian Media"
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "media_analysis.db"
+DB_PATH = BASE_DIR / "data" / "rtr_db" / "media_sentiment_analysis.db"
 
 def normalize_date(date_str: str) -> str:
     """Parses various date string formats and normalizes them to YYYY-MM-DD HH:MM:SS"""

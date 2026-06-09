@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / 'data'
-DB_PATH = DATA_DIR / 'media_analysis.db'
+DB_PATH = DATA_DIR / 'rtr_db' / 'media_sentiment_analysis.db'
 
 def setup_database():
     """Initializes the SQLite database and creates the required tables."""

@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "media_analysis.db"
+DB_PATH = BASE_DIR / "data" / "rtr_db" / "media_sentiment_analysis.db"
 PDF_DIR = BASE_DIR / "data" / "kampagnen"
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 

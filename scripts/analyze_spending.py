@@ -6,7 +6,7 @@ import sqlite3
 csv_pre2024 = "data/rtr_csv/mt-bekanntgabe.csv"
 csv_2024 = "data/rtr_csv/mt-bekanntgabe2024.csv"
 output_dir = "output/visualizations/spending_tables"
-db_path = "data/rtr_csv/medientransparenz.db"
+db_path = "data/rtr_db/media_financial_disclosures.db"
 
 def main():
     # Ensure output directory exists

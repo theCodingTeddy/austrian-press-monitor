@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Setup directories
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "media_analysis.db"
+DB_PATH = BASE_DIR / "data" / "rtr_db" / "media_sentiment_analysis.db"
 OUTPUT_DIR = BASE_DIR / "output" / "visualizations"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
