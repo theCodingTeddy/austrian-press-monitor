@@ -1,0 +1,59 @@
+﻿Name,Party,Start of Period,End of Period,Ministry,Bucket
+Brigitte Bierlein,no party,1/1/20,1/6/20,Bundeskanzleramt,Chancellor's Office
+Sebastian Kurz,ÖVP,1/7/20,10/10/21,Bundeskanzleramt,Chancellor's Office
+Alexander Schallenberg,ÖVP,10/11/21,12/5/21,Bundeskanzleramt,Chancellor's Office
+Karl Nehammer,ÖVP,12/6/21,1/9/25,Bundeskanzleramt,Chancellor's Office
+Alexander Schallenberg,ÖVP,1/10/25,3/2/25,Bundeskanzleramt,Chancellor's Office
+Christian Stocker,ÖVP,3/3/25,12/31/25,Bundeskanzleramt,Chancellor's Office
+Eduard Müller,no party,1/1/20,1/6/20,Bundesministerium für Finanzen,Finance
+Gernot Blümel,ÖVP,1/7/20,12/5/21,Bundesministerium für Finanzen,Finance
+Magnus Brunner,ÖVP,12/6/21,11/19/24,Bundesministerium für Finanzen,Finance
+Gunter Mayr,no party,11/20/24,3/2/25,Bundesministerium für Finanzen,Finance
+Markus Marterbauer,SPÖ,3/3/25,12/31/25,Bundesministerium für Finanzen,Finance
+Thomas Starlinger,no party,1/1/20,1/6/20,Bundesministerium für Landesverteidigung,Defense
+Klaudia Tanner,ÖVP,1/7/20,12/31/25,Bundesministerium für Landesverteidigung,Defense
+Wolfgang Peschorn,no party,1/1/20,1/6/20,Bundesministerium für Inneres,Interior
+Karl Nehammer,ÖVP,1/7/20,12/5/21,Bundesministerium für Inneres,Interior
+Gerhard Karner,ÖVP,12/6/21,12/31/25,Bundesministerium für Inneres,Interior
+Clemens Jabloner,no party,1/1/20,1/6/20,Bundesministerium für Justiz,Justice
+Alma Zadic,Grüne,1/7/20,3/2/25,Bundesministerium für Justiz,Justice
+Anna Sporrer,SPÖ,3/3/25,12/31/25,Bundesministerium für Justiz,Justice
+Alexander Schallenberg,ÖVP,1/1/20,10/10/21,Bundesministerium für europäische und internationale Angelegenheiten,Foregin Affairs
+Michael Linhart,ÖVP,10/11/21,12/5/21,Bundesministerium für europäische und internationale Angelegenheiten,Foregin Affairs
+Alexander Schallenberg,ÖVP,12/6/21,3/2/25,Bundesministerium für europäische und internationale Angelegenheiten,Foregin Affairs
+Beate Meinl-Reisinger,NEOS,3/3/25,12/31/25,Bundesministerium für europäische und internationale Angelegenheiten,Foregin Affairs
+Brigitte Zarfl,no party,1/1/20,1/6/20,"Bundesministerium für Arbeit, Soziales, Gesundheit und Konsumentenschutz",Health & Social Affairs
+Rudolf Anschober,Grüne,1/7/20,1/28/20,"Bundesministerium für Arbeit, Soziales, Gesundheit und Konsumentenschutz",Health & Social Affairs
+Rudolf Anschober,Grüne,1/29/20,4/18/21,"Bundesministerium für Soziales, Gesundheit, Pflege und Konsumentenschutz",Health & Social Affairs
+Wolfgang Mückstein,Grüne,4/19/21,3/7/22,"Bundesministerium für Soziales, Gesundheit, Pflege und Konsumentenschutz",Health & Social Affairs
+Johannes Ruach,Grüne,3/8/22,3/2/25,"Bundesministerium für Soziales, Gesundheit, Pflege und Konsumentenschutz",Health & Social Affairs
+Korinna Schumann,SPÖ,3/3/25,3/31/25,"Bundesministerium für Soziales, Gesundheit, Pflege und Konsumentenschutz",Health & Social Affairs
+Korinna Schumann,SPÖ,4/1/25,12/31/25,"Bundesministerium für Arbeit, Soziales, Gesundheit, Pflege und Konsumentenschutz",Health & Social Affairs
+Iris Eliisa Rauskala,no party,1/1/20,1/6/20,"Bundesministerium für Bildung, Wissenschaft und Forschung",Education & Science
+Heinz Faßmann,no party,1/7/20,12/5/21,"Bundesministerium für Bildung, Wissenschaft und Forschung",Education & Science
+Martin Polaschek,no party,12/6/21,3/2/25,"Bundesministerium für Bildung, Wissenschaft und Forschung",Education & Science
+Christoph Wiederkehr,NEOS,3/3/25,3/31/25,"Bundesministerium für Bildung, Wissenschaft und Forschung",Education & Science
+Christoph Wiederkehr,NEOS,4/1/25,12/31/25,Bundesministerium für Bildung,Education & Science
+Eva-Maria Holzleitner,SPÖ,4/1/25,12/31/25,"Bundesministerium für Frauen, Wissenschaft und Forschung",Education & Science
+Elisabeth Udolf-Strobl,no party,1/1/20,1/6/20,Bundesministerium für Digitalisierung und Wirtschaftsstandort,Economy
+Margarete Schramböck,ÖVP,1/7/20,5/10/22,Bundesministerium für Digitalisierung und Wirtschaftsstandort,Economy
+Martin Kocher,no party,5/11/22,7/17/22,Bundesministerium für Digitalisierung und Wirtschaftsstandort,Economy
+Martin Kocher,no party,7/18/22,3/2/25,Bundesministerium für Arbeit und Wirtschaft,Economy
+Wolfgang Hattmannsdorfer,ÖVP,3/3/25,3/31/25,Bundesministerium für Arbeit und Wirtschaft,Economy
+Wolfgang Hattmannsdorfer,ÖVP,4/1/25,12/31/25,"Bundesministerium für Wirtschaft, Energie und Tourismus",Economy
+Maria Patek,no party,1/1/20,1/6/20,Bundesministerium für Nachhaltigkeit und Tourismus,Agriculture & Environment
+Elisabeth Köstinger,ÖVP,1/7/20,1/28/20,Bundesministerium für Nachhaltigkeit und Tourismus,Agriculture & Environment
+Elisabeth Köstinger,ÖVP,1/29/20,5/17/22,"Bundesministerium für Landwirtschaft, Regionen und Tourismus",Agriculture & Environment
+Norbert Totschnig,ÖVP,5/18/22,7/17/22,"Bundesministerium für Landwirtschaft, Regionen und Tourismus",Agriculture & Environment
+Norbert Totschnig,ÖVP,7/18/22,3/31/25,"Bundesministerium für Land- und Forstwirtschaft, Regionen und Wasserwirtschaft",Agriculture & Environment
+Andreas Reichhardt,FPÖ,1/1/20,1/6/20,"Bundesministerium für Verkehr, Innovation und Technologie",Agriculture & Environment
+Leonore Gewessler,Grüne,1/7/20,1/28/20,"Bundesministerium für Verkehr, Innovation und Technologie",Agriculture & Environment
+Leonore Gewessler,Grüne,1/29/20,3/2/25,"Bundesministerium für Klimaschutz, Umwelt, Energie, Mobilität, Innovation und Technologie",Agriculture & Environment
+Peter Hanke,SPÖ,3/3/25,3/31/25,"Bundesministerium für Klimaschutz, Umwelt, Energie, Mobilität, Innovation und Technologie",Agriculture & Environment
+Peter Hanke,SPÖ,4/1/25,12/31/25,"Bundesministerium für Innovation, Mobilität und Infrastruktur",Agriculture & Environment
+Norbert Totschnig,ÖVP,4/1/25,12/31/25,"Bundesministerium für Land- und Forstwirtschaft, Klima- und Umweltschutz, Regionen und Wasserwirtschaft",Agriculture & Environment
+Eduard Müller,no party,1/1/20,1/6/20,Bundesministerium für öffentlichen Dienst und Sport,"Arts, Culture & Civil Services"
+Werner Kogler,Grüne,1/7/20,1/28/20,Bundesministerium für öffentlichen Dienst und Sport,"Arts, Culture & Civil Services"
+Werner Kogler,Grüne,1/29/20,3/2/25,"Bundesministerium für Kunst, Kultur, öffentlichen Dienst und Sport","Arts, Culture & Civil Services"
+Andreas Babler,SPÖ,3/3/25,3/31/25,"Bundesministerium für Kunst, Kultur, öffentlichen Dienst und Sport","Arts, Culture & Civil Services"
+Andreas Babler,SPÖ,4/1/25,12/31/25,"Bundesministerium für Wohnen, Kunst, Kultur, Medien und Sport","Arts, Culture & Civil Services"
