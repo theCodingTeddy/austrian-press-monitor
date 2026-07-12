@@ -2,7 +2,7 @@
 .venv/
 
 # Database
-data/*.db
+*.db
 
 # Python cache
 __pycache__/
