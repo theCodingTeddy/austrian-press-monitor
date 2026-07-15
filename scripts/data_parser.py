@@ -14,8 +14,8 @@ def main():
     df_pre2024 = (
         pd.read_csv(csv_pre2024, sep=';', encoding='utf-8', decimal=',')
         .pipe(remove_leermeldungen)
-        .pipe(remove_non_ministries)
         .drop(columns=['bekanntgabe', 'leermeldung'])
+        .pipe(remove_non_ministries)
         .pipe(unify_media_names, 'medium')
         .pipe(convert_to_half_years)
         .rename(columns={'rechtstraeger': 'ministry'})
@@ -38,9 +38,10 @@ def main():
         .pipe(add_policy_buckets_col)
     )
     
+    logger.info(f'Preprocessed data frame with the following columns:\n\t{df_all_time.columns.to_list()}')
+
     # Loading into SQLite database
     load_data_into_db(df_all_time)
-
 
 #------------------------- HELPER FUNCTIONS -------------------------#
 
@@ -118,10 +119,11 @@ def add_policy_buckets_col(df: pd.DataFrame) -> pd.DataFrame:
 
 def rename_agricultural_ministry(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Renames 'BM für Land- und Forstwirtschaft, ...' into correct name before Q3 2022.
+    Renames 'BM für Land- und Forstwirtschaft, ...' into the correct name until H1 2022.
     """
 
-    df['rechtstraeger'] = df['rechtstraeger'].replace({
+    mask = df['halbjahr'].astype(str) <= '20221'
+    df.loc[mask, 'rechtstraeger'] = df.loc[mask, 'rechtstraeger'].replace({
         'Bundesministerium für Land- und Forstwirtschaft, Regionen und Wasserwirtschaft'
         : 'Bundesministerium für Landwirtschaft, Regionen und Tourismus'})
     

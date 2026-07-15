@@ -21,7 +21,7 @@ def main():
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
 
-        logger.info(f'Database initialized at path {DB_PATH}')
+        logger.info(f'Database initialized at path:\n\t{DB_PATH}')
 
         # Create necessary tables
         cur.execute('''CREATE TABLE IF NOT EXISTS media_spending(
