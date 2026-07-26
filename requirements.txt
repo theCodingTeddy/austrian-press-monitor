@@ -5,3 +5,6 @@
 pandas
 # pdfplumber
 # beautifulsoup4
+pytest
+pandera
+pydantic

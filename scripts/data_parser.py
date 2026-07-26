@@ -2,8 +2,7 @@ import sqlite3
 from setup_db import logger, DATA_DIR, DB_PATH
 from pathlib import Path
 import pandas as pd
-
-# TODO: add logs
+from schemas import BaseMediaSpendingSchema, FinalMediaSpendingSchema
 
 def main():
     # Unmodified CSVs from the RTR website
@@ -19,6 +18,7 @@ def main():
         .pipe(unify_media_names, 'medium')
         .pipe(convert_to_half_years)
         .rename(columns={'rechtstraeger': 'ministry'})
+        .pipe(BaseMediaSpendingSchema.validate)
     )
     
     # Preprocessing of the 2024-2025 data
@@ -30,12 +30,15 @@ def main():
         .pipe(rename_agricultural_ministry)
         .pipe(unify_media_names, 'medieninhaber')
         .rename(columns={'rechtstraeger': 'ministry', 'medieninhaber': 'medium', 'halbjahr': 'half-year'})
+        .astype({'half-year': str})
+        .pipe(BaseMediaSpendingSchema.validate)
     )
 
     # Merging both dataframes and adding the policy buckets column
     df_all_time = (
         merge_rtr_tables(df_pre2024, df_2024)
         .pipe(add_policy_buckets_col)
+        .pipe(FinalMediaSpendingSchema.validate)
     )
     
     logger.info(f'Preprocessed data frame with the following columns:\n\t{df_all_time.columns.to_list()}')
@@ -91,7 +94,7 @@ def unify_media_names(df: pd.DataFrame, colname: str) -> pd.DataFrame:
     df[colname] = df[colname].str.lower().map(media_to_synonym_map)
 
     # Removing all media which do not occur in the synonym lists
-    df = df.dropna(subset=colname) # TODO: add .copy()?
+    df = df.dropna(subset=colname)
 
     # Title-casing the newspaper names
     df[colname] = df[colname].str.title()
