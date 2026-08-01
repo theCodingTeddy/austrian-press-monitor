@@ -1,6 +1,5 @@
 import sqlite3
 from setup_db import logger, DATA_DIR, DB_PATH
-from pathlib import Path
 import pandas as pd
 from schemas import BaseMediaSpendingSchema, FinalMediaSpendingSchema
 
@@ -113,7 +112,7 @@ def add_policy_buckets_col(df: pd.DataFrame) -> pd.DataFrame:
     ministers_df = pd.read_csv(DATA_DIR / 'synonym_lists' / 'ministers.csv', sep=',', encoding='utf-8')
 
     # Creating a map from the ministry to the policy bucket
-    ministry_to_bucket_map = dict(zip(ministers_df['Ministry'], ministers_df['Bucket']))
+    ministry_to_bucket_map = dict(zip(ministers_df['ministry'], ministers_df['bucket']))
     
     # Adding a new column containing the policy buckets
     df['policy_bucket'] = df['ministry'].map(ministry_to_bucket_map)

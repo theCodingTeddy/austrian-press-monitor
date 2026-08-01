@@ -2,61 +2,208 @@ import logging
 import sqlite3
 import datetime
 import time
-import urllib.request
+import random
 import urllib.parse
-import xml.etree.ElementTree as ET
-import re
-from abc import ABC, abstractmethod
-from typing import List, Dict, Tuple
 from pathlib import Path
+from typing import List, Dict, Set, Tuple
+
+import pandas as pd
+import pandera.pandas as pa
+import trafilatura
+import dateparser
 from playwright.sync_api import sync_playwright
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+DRY_RUN = True
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Student Research Project - Sentiment Analysis of Austrian Media"
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "rtr_db" / "media_sentiment_analysis.db"
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DB_PATH = BASE_DIR / "data" / "rtr_db" / "austrian_media_data.db"
+MINISTERS_CSV = BASE_DIR / "data" / "synonym_lists" / "ministers.csv"
+SYNONYMS_CSV = BASE_DIR / "data" / "synonym_lists" / "ministry_synonyms.csv"
 
-def normalize_date(date_str: str) -> str:
-    """Parses various date string formats and normalizes them to YYYY-MM-DD HH:MM:SS"""
-    if not date_str:
-        return ""
-    date_str = date_str.strip()
-    try:
-        from datetime import datetime
-        import re
-        
-        import email.utils
-        
-        # Handle "Heute" format e.g. "29.10.2025, 17:00"
-        if re.match(r'^\d{2}\.\d{2}\.\d{4},\s*\d{2}:\d{2}$', date_str):
-            dt = datetime.strptime(date_str, "%d.%m.%Y, %H:%M")
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-            
-        # Handle RFC-2822 format out of Google News RSS (e.g. Thu, 15 Feb 2024 10:00:00 GMT)
-        if "," in date_str and "GMT" in date_str:
-            dt = email.utils.parsedate_to_datetime(date_str)
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-            
-        # Handle strict ISO formats including those missing seconds or with timezones
-        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        # Fallback to the raw string if parsing completely fails
-        return date_str
+OUTLETS = {
+    "ORF": "orf.at",
+    "Kronen Zeitung": "krone.at",
+    "Heute": "heute.at",
+    "Österreich – oe24": "oe24.at",
+    "Kurier": "kurier.at",
+    "Kleine Zeitung": "kleinezeitung.at",
+    "Der Standard": "derstandard.at",
+    "Die Presse": "diepresse.com"
+}
 
-def save_article_to_db(db_path, outlet, url, article_data):
-    """Saves the extracted article to the database."""
+minister_schema = pa.DataFrameSchema({
+    "Name": pa.Column(str),
+    "Party": pa.Column(str, required=False),
+    "Start of Period": pa.Column(str),
+    "End of Period": pa.Column(str),
+    "Ministry": pa.Column(str, required=False),
+    "Bucket": pa.Column(str),
+})
+
+synonym_schema = pa.DataFrameSchema({
+    "Bucket": pa.Column(str),
+    "Synonym": pa.Column(str),
+    "Start of Period": pa.Column(str),
+    "End of Period": pa.Column(str),
+})
+
+def load_and_prepare_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    df_min = pd.read_csv(MINISTERS_CSV)
+    df_syn = pd.read_csv(SYNONYMS_CSV)
+    
+    minister_schema.validate(df_min)
+    synonym_schema.validate(df_syn)
+    
+    df_min['start'] = pd.to_datetime(df_min['Start of Period'], format='%m/%d/%y')
+    df_min['end'] = pd.to_datetime(df_min['End of Period'], format='%m/%d/%y')
+    
+    df_syn['start'] = pd.to_datetime(df_syn['Start of Period'], format='%m/%d/%y')
+    df_syn['end'] = pd.to_datetime(df_syn['End of Period'], format='%m/%d/%y')
+    
+    return df_min, df_syn
+
+def get_queries(df_min: pd.DataFrame, df_syn: pd.DataFrame, start_date: datetime.datetime, end_date: datetime.datetime) -> List[Dict]:
+    queries = []
+    current = start_date
+    while current < end_date:
+        year = current.year + (current.month // 12)
+        month = (current.month % 12) + 1
+        next_month_start = datetime.datetime(year, month, 1)
+        next_month = next_month_start - datetime.timedelta(days=1)
+        if next_month > end_date:
+            next_month = end_date
+            
+        buckets = set(df_min['Bucket'].unique()).union(set(df_syn['Bucket'].unique()))
+        
+        for bucket in buckets:
+            active_min = df_min[(df_min['Bucket'] == bucket) & (df_min['start'] <= next_month) & (df_min['end'] >= current)]
+            active_syn = df_syn[(df_syn['Bucket'] == bucket) & (df_syn['start'] <= next_month) & (df_syn['end'] >= current)]
+            
+            terms = set(active_min['Name'].unique()).union(set(active_syn['Synonym'].unique()))
+            terms = list(terms)
+            
+            # Batch terms to avoid Google search limits
+            batch_size = 5
+            for i in range(0, len(terms), batch_size):
+                batch = terms[i:i+batch_size]
+                if batch:
+                    queries.append({
+                        'bucket': bucket,
+                        'start_str': current.strftime("%Y-%m-%d"),
+                        'end_str': next_month.strftime("%Y-%m-%d"),
+                        'terms': batch
+                    })
+                    
+        current = next_month + datetime.timedelta(days=1)
+        
+    return queries
+
+def search_google_playwright(site: str, terms: List[str], after: str, before: str, page, max_results: int = 10) -> Set[str]:
+    links = set()
+    terms_query = " OR ".join([f'"{t}"' for t in terms])
+    query = f'site:{site} ({terms_query}) after:{after} before:{before}'
+    encoded_query = urllib.parse.quote_plus(query)
+    url = f"https://www.google.com/search?q={encoded_query}&hl=de"
+    
     try:
-        conn = sqlite3.connect(db_path)
+        page.goto(url, wait_until='domcontentloaded')
+        
+        if "consent.google.com" in page.url:
+            try:
+                import re
+                btn = page.locator('button, [role="button"]').filter(has_text=re.compile(r"(Accept all|Alle akzeptieren|I agree|Zustimmen)", re.IGNORECASE)).first
+                if btn.count() > 0:
+                    btn.click()
+                    page.wait_for_load_state('domcontentloaded', timeout=5000)
+            except Exception as e:
+                logger.debug(f"Could not bypass consent: {e}")
+                
+        # Handle simple captcha / robot check warning
+        if "sorry/index" in page.url:
+            logger.warning("Google threw a CAPTCHA. Pausing...")
+            time.sleep(10)
+            return links
+
+        a_tags = page.locator('#search a').all()
+        for a in a_tags:
+            href = a.get_attribute('href')
+            if href and site in href and "google.com" not in href:
+                links.add(href)
+                if len(links) >= max_results:
+                    break
+    except Exception as e:
+        logger.error(f"Error searching Google for {site}: {e}")
+        
+    return links
+
+def is_valid_context(text: str, keyword: str) -> bool:
+    if not text:
+        return False
+        
+    text_lower = text.lower()
+    kw_lower = keyword.lower()
+    
+    if kw_lower == "bmi":
+        context_words = ['polizei', 'innenminister', 'karner', 'nehammer', 'sicherheit', 'regierung', 'ministerium', 'beamte', 'asyl']
+        if not any(word in text_lower for word in context_words):
+            return False
+        if 'übergewicht' in text_lower or 'body mass index' in text_lower or 'adipositas' in text_lower:
+            return False
+            
+    if kw_lower == "bka":
+        context_words = ['bundeskanzler', 'regierung', 'kanzler', 'minister']
+        if not any(word in text_lower for word in context_words):
+            return False
+            
+    return True
+
+def extract_article(url: str) -> Dict[str, str]:
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        return {}
+        
+    result = trafilatura.extract(
+        downloaded,
+        include_comments=False,
+        include_tables=False,
+        output_format='json'
+    )
+    
+    if result:
+        import json
+        try:
+            data = json.loads(result)
+            dt = data.get('date')
+            if dt:
+                parsed = dateparser.parse(dt)
+                if parsed:
+                    data['date'] = parsed.strftime("%Y-%m-%d %H:%M:%S")
+            return {
+                "headline": data.get('title', ''),
+                "full_text": data.get('text', ''),
+                "date": data.get('date', '')
+            }
+        except Exception as e:
+            logger.error(f"Failed to parse Trafilatura JSON for {url}: {e}")
+            
+    return {}
+
+def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]):
+    if not article_data.get('full_text'):
+        return
+        
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Insert or ignore since url is UNIQUE
         cursor.execute('''
-        INSERT OR IGNORE INTO news_articles (outlet, date, headline, full_text, url)
+        INSERT OR IGNORE INTO news_articles (medium, date, headline, full_text, url)
         VALUES (?, ?, ?, ?, ?)
         ''', (
             outlet,
@@ -75,238 +222,69 @@ def save_article_to_db(db_path, outlet, url, article_data):
     except Exception as e:
         logger.error(f"Failed to save article to DB: {e}")
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
-def fetch_google_news_rss(site_domain: str, keywords: List[str], start_date: str, end_date: str) -> List[Tuple[str, str]]:
-    """Uses Google News RSS to find articles matching the keywords on the given domain."""
-    links_data = set()
+def main():
+    logger.info("Loading data from CSVs...")
+    df_min, df_syn = load_and_prepare_data()
     
-    from datetime import datetime
-    import urllib.parse
-    import urllib.request
+    start_date = datetime.datetime(2020, 1, 1)
+    end_date = datetime.datetime(2025, 12, 31)
     
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    
-    # Chunk timeline month by month to bypass Google News's ~100 article hard cap per search query
-    intervals = []
-    current = start_dt
-    while current < end_dt:
-        # Jump to the 1st of the next month safely
-        year = current.year + (current.month // 12)
-        month = (current.month % 12) + 1
-        next_month = datetime(year, month, 1)
+    logger.info("Generating queries...")
+    queries = get_queries(df_min, df_syn, start_date, end_date)
         
-        if next_month > end_dt:
-            intervals.append((current.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")))
-        else:
-            intervals.append((current.strftime("%Y-%m-%d"), next_month.strftime("%Y-%m-%d")))
-            
-        current = next_month
-
-    # Contextual keywords guarantee that acronyms (e.g. 'BMI' meaning Body Mass Index or 'BKA' meaning local theater) are excluded
-    context_filter = '("Politik" OR "Regierung" OR "Ministerium" OR "Inland" OR "Österreich")'
-    
-    for start_int, end_int in intervals:
-        # Batch keywords by groups of 3 to avoid excessive max-character limits
-        for i in range(0, len(keywords), 3):
-            batch = keywords[i:i+3]
-            query_parts = " OR ".join([f'"{kw}"' for kw in batch])
-            
-            # Formulate query: (KW1 OR KW2 OR KW3) AND (Context) site:domain after:X before:Y
-            query = f'({query_parts}) AND {context_filter} site:{site_domain} after:{start_int} before:{end_int}'
-            encoded_query = urllib.parse.quote_plus(query)
-            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=de&gl=AT&ceid=AT:de"
-            
-            req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-            try:
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    xml_data = response.read()
-                    root = ET.fromstring(xml_data)
-                    for item in root.findall('.//item'):
-                        link = item.find('link')
-                        pub_date = item.find('pubDate')
-                        if link is not None and link.text:
-                            pdate = pub_date.text if pub_date is not None else ""
-                            links_data.add((link.text, pdate))
-            except Exception as e:
-                logger.error(f"RSS fetch failed for {batch} on {site_domain} [{start_int} to {end_int}]: {e}")
-                
-            import time
-            time.sleep(1) # Be nice to Google
+    if DRY_RUN:
+        logger.info("DRY RUN ENABLED. Limiting queries and not saving to DB.")
+        queries = queries[:10]
         
-    return list(links_data)
-
-def generic_playwright_extract(url: str, dummy_name: str, dry_run: bool) -> Dict[str, str]:
-    """Generic Playwright extraction that bypasses cookie banners by reading generic meta/title tags."""
-    if dry_run: return {"headline": f"{dummy_name} Dummy", "full_text": "Content", "date": "2024-01-01"}
-    article_data = {}
+    logger.info(f"Generated {len(queries)} total query batches.")
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent=USER_AGENT)
         page = context.new_page()
-        try:
-            # Wait until DOM is loaded, Google News links redirect to actual article
-            page.goto(url, wait_until='domcontentloaded', timeout=15000)
+        
+        for outlet_name, site_domain in OUTLETS.items():
+            logger.info(f"--- Processing outlet: {site_domain} ---")
             
-            # Check if we hit Google's consent wall
-            if "consent.google.com" in page.url or "continue" in page.title() or "fortfahren" in page.title():
-                # Try to click accept
-                try:
-                    btn = page.locator('button, [role="button"]').filter(has_text=re.compile(r"(Accept all|Alle akzeptieren|I agree|Zustimmen)", re.IGNORECASE)).first
-                    if btn.count() > 0:
-                        btn.click()
-                        page.wait_for_load_state('domcontentloaded', timeout=10000)
-                except Exception as e:
-                    logger.debug(f"Google consent click failed: {e}")
-            
-            # Wait an extra second for redirect chains if any
-            page.wait_for_timeout(2000)
-            
-            # Extract Title via head to avoid cookie banners
-            title = page.title()
-            article_data['headline'] = title.split(' - ')[0].split(' | ')[0].strip()
-            
-            # Extract standard date meta tags
-            date_str = ""
-            # List of tuples: (selector, attribute or None for inner_text)
-            date_selectors = [
-                ('meta[property="article:published_time"]', 'content'),
-                ('meta[name="article:published_time"]', 'content'), # Die Presse
-                ('meta[name="date"]', 'content'),
-                ('meta[name="pubdate"]', 'content'),
-                ('meta[property="og:article:published_time"]', 'content'),
-                ('meta[name="publication_date"]', 'content'),
-                ('meta[itemprop="datePublished"]', 'content'),
-                ('time.article-pubdate', 'datetime'), # Der Standard
-                ('.author-time', None), # Heute
-            ]
-            
-            for selector, attr in date_selectors:
-                loc = page.locator(selector)
-                if loc.count() > 0:
-                    val = loc.first.get_attribute(attr) if attr else loc.first.inner_text()
-                    if val and val.strip():
-                        date_str = normalize_date(val.strip())
-                        break
-                        
-            article_data['date'] = date_str
+            for q in queries:
+                terms = q['terms']
+                logger.info(f"Searching {site_domain} for {terms} between {q['start_str']} and {q['end_str']}")
                 
-            # Extract paragraphs. Filter short ones to ignore generic cookie banner text
-            paras = page.locator('p').all_inner_texts()
-            # Also look for article tag if available
-            article_paras = page.locator('article p').all_inner_texts()
-            if article_paras: paras = article_paras
+                links = search_google_playwright(
+                    site=site_domain,
+                    terms=terms,
+                    after=q['start_str'],
+                    before=q['end_str'],
+                    page=page
+                )
                 
-            article_data['full_text'] = "\n".join([p for p in paras if len(p.strip()) > 40])
-            
-        except Exception as e:
-            logger.error(f"{dummy_name} extract error for {url}: {e}")
-        finally:
-            browser.close()
-    return article_data
-
-class BaseScraper(ABC):
-    """Abstract base class for news scrapers."""
-    
-    def __init__(self, dry_run: bool = True):
-        self.dry_run = dry_run
-        logger.info(f"Initialized {self.__class__.__name__}. Dry Run mode enabled: {self.dry_run}")
-        
-    @abstractmethod
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        pass
-        
-    @abstractmethod
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        pass
-        
-class DerStandardScraper(BaseScraper):
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        if self.dry_run: return [("https://www.derstandard.at/story/dummy-1", "")]
-        return fetch_google_news_rss("derstandard.at", keywords, start_date, end_date)
-        
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        return generic_playwright_extract(url, "Der Standard", self.dry_run)
-
-class KroneScraper(BaseScraper):
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        if self.dry_run: return [("https://www.krone.at/dummy-krone", "")]
-        return fetch_google_news_rss("krone.at", keywords, start_date, end_date)
-        
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        return generic_playwright_extract(url, "Krone", self.dry_run)
-
-class PresseScraper(BaseScraper):
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        if self.dry_run: return [("https://www.diepresse.com/dummy-presse", "")]
-        return fetch_google_news_rss("diepresse.com", keywords, start_date, end_date)
-        
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        return generic_playwright_extract(url, "Die Presse", self.dry_run)
-
-class HeuteScraper(BaseScraper):
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        if self.dry_run: return [("https://www.heute.at/dummy-heute", "")]
-        return fetch_google_news_rss("heute.at", keywords, start_date, end_date)
-        
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        return generic_playwright_extract(url, "Heute", self.dry_run)
-
-class KleineZeitungScraper(BaseScraper):
-    def get_article_links(self, start_date: str, end_date: str, keywords: List[str]) -> List[Tuple[str, str]]:
-        if self.dry_run: return [("https://www.kleinezeitung.at/dummy-kleine", "")]
-        return fetch_google_news_rss("kleinezeitung.at", keywords, start_date, end_date)
-        
-    def extract_article_content(self, url: str) -> Dict[str, str]:
-        return generic_playwright_extract(url, "Kleine Zeitung", self.dry_run)
-
-def main():
-    MINISTRIES = {
-        "BMI": ["Bundesministerium für Inneres", "Innenministerium", "BMI"],
-        "BMEIA": ["BMEIA", "Außenministerium", "Bundesministerium für europäische und internationale Angelegenheiten"],
-        "BMLV": ["BMLV", "Verteidigungsministerium", "Bundesministerium für Landesverteidigung"],
-        "BKA": ["Bundeskanzleramt", "BKA"],
-        "BMLUK": ["BMLUK", "Umweltministerium", "Klimaministerium", "BMK", "Bundesministerium für Klimaschutz"]
-    }
-    
-    START_DATE = "2024-01-01"
-    END_DATE = "2026-01-31"
-    
-    # Flatten the keywords for search
-    all_keywords = []
-    for keywords in MINISTRIES.values():
-        all_keywords.extend(keywords)
-        
-    DRY_RUN = False
-    
-    scrapers = {
-        "Der Standard": DerStandardScraper(dry_run=DRY_RUN),
-        "Krone": KroneScraper(dry_run=DRY_RUN),
-        "Die Presse": PresseScraper(dry_run=DRY_RUN),
-        "Heute": HeuteScraper(dry_run=DRY_RUN),
-        "Kleine Zeitung": KleineZeitungScraper(dry_run=DRY_RUN)
-    }
-    
-    logger.info(f"Starting Scraping Run from {START_DATE} to {END_DATE}")
-    
-    for outlet_name, scraper in scrapers.items():
-        logger.info(f"--- Processing outlet: {outlet_name} ---")
-        links = scraper.get_article_links(START_DATE, END_DATE, all_keywords)
-        logger.info(f"Discovered {len(links)} links for {outlet_name}")
-        
-        # Iterate through all discovered links
-        for url, rss_date in links:
-            content = scraper.extract_article_content(url)
-            if content and content.get("full_text"):
-                logger.info(f"Successfully scraped: {content.get('headline')[:50]}...")
+                for link in links:
+                    logger.info(f"Extracting: {link}")
+                    content = extract_article(link)
+                    
+                    if content and content.get('full_text'):
+                        valid = False
+                        for term in terms:
+                            if is_valid_context(content['full_text'], term):
+                                valid = True
+                                break
+                                
+                        if valid:
+                            logger.info(f"Valid article found: {content.get('headline', '')[:50]}")
+                            if not DRY_RUN:
+                                save_article_to_db(outlet_name, link, content)
+                        else:
+                            logger.info(f"Article rejected by context filter: {link}")
+                            
+                time.sleep(random.uniform(2, 5))
                 
-                # Apply the RSS fallback date if the native extraction couldn't pierce the cookie wall 
-                final_date_str = content.get('date') or rss_date
-                content['date'] = normalize_date(final_date_str)
+            if DRY_RUN:
+                break
                 
-                save_article_to_db(str(DB_PATH), outlet_name, url, content)
+        browser.close()
 
 if __name__ == '__main__':
     main()

@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # Define file paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / 'data'
-DB_PATH = DATA_DIR / 'rtr_db' / 'austrian_media_data.db'
+DB_PATH = DATA_DIR / 'austrian_media_data.db'
 
 def main():
     """
@@ -31,6 +31,15 @@ def main():
             euro REAL NOT NULL,
             half_year INTEGER NOT NULL,
             policy_bucket TEXT NOT NULL
+        )''')
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS news_articles(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medium TEXT NOT NULL,
+            date TEXT,
+            headline TEXT,
+            full_text TEXT NOT NULL,
+            url TEXT UNIQUE NOT NULL
         )''')
 
         con.commit()

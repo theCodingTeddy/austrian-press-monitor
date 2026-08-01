@@ -12,3 +12,19 @@ class BaseMediaSpendingSchema(pa.DataFrameModel):
 class FinalMediaSpendingSchema(BaseMediaSpendingSchema):
     """Schema for the final dataframe loaded into the DB."""
     policy_bucket: Series[str] = pa.Field(nullable=False)
+
+class MinisterSchema(pa.DataFrameModel):
+    """Schema for the ministers dataframe for the news scraper."""
+    name: Series[str] = pa.Field(nullable=False)
+    party: Series[str] = pa.Field(nullable=False)
+    start_of_period: Series[str] = pa.Field(nullable=False)
+    end_of_period: Series[str] = pa.Field(nullable=False)
+    ministry: Series[str] = pa.Field(nullable=False)
+    bucket: Series[str] = pa.Field(nullable=False)
+
+class SynonymSchema(pa.DataFrameModel):
+    """Schema for the synonyms dataframe for the news scraper."""
+    bucket: Series[str] = pa.Field(nullable=False)
+    synonym: Series[str] = pa.Field(nullable=False)
+    start_of_period: Series[str] = pa.Field(nullable=False)
+    end_of_period: Series[str] = pa.Field(nullable=False)

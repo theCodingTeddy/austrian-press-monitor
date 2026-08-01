@@ -15,8 +15,10 @@ By cross-referencing government financial disclosures (via manually harvested da
 
 The project is driven by a series of modular Python scripts located in the `scripts/` directory:
 
-- `setup_db.py`: Initializes the SQLite database (`data/rtr_db/media_sentiment_analysis.db`) with three relational tables: `financial_events`, `news_articles`, and `analysis_results`.
-- `scraper.py`: Orchestrates the retrieval of news articles based on targeted keywords (Ministries), utilizing Google News RSS for discovery and Playwright for full-text extraction.
+- `run_all.py`: Orchestrates the entire data pipeline, running all other scripts in the correct order.
+- `setup_db.py`: Initializes the SQLite database (`data/austrian_media_data.db`) with three relational tables: `media_spending`, `news_articles`, and `analysis_results`.
+- `data_parser.py`: Parses and standardizes the CSV files containing financial data and stores it in the `media_spending` table.
+- `news_scraper.py`: Orchestrates the retrieval of news articles based on targeted keywords (Ministries), utilizing Google News RSS for discovery and Playwright for full-text extraction.
 - `financial_scraper.py`: Fetches and standardizes government media spending data from the CSV dataset.
 - `nlp_engine.py`: Processes the scraped articles to detect targeted organizations (e.g., BKA, BMI, BMLV). It explicitly slices a context window around mentions and feeds it into the German-BERT model for precise sentiment scoring. Hardware-accelerated for Apple Silicon (MPS).
 - `analyzer.py`: Joins the NLP and financial datasets, aligns them temporally, and generates a suite of comparative visualizations in the `output/visualizations/` directory.

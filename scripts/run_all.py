@@ -1,5 +1,6 @@
 import setup_db
 import data_parser
+import news_scraper
 
 def main():
     """
@@ -14,6 +15,11 @@ def main():
     print("2. Parsing and cleaning data")
     print("-"*35)
     data_parser.main()
+
+    print("-"*35)
+    print("3. Scraping news articles")
+    print("-"*35)
+    news_scraper.main()
 
     # TODO: include all upcoming scripts
 

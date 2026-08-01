@@ -1,10 +1,12 @@
 # torch
 # transformers
 # spacy
-# playwright
+playwright
 pandas
 # pdfplumber
 # beautifulsoup4
 pytest
 pandera
 pydantic
+trafilatura
+dateparser
