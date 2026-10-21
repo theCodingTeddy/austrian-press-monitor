@@ -5,14 +5,17 @@ from pathlib import Path
 scripts_path = Path(__file__).parent.parent / 'scripts'
 sys.path.append(str(scripts_path))
 
+import sqlite3
 import pandas as pd
 import pytest
 from unittest.mock import patch
+import setup_db
 from data_parser import (
     convert_to_half_years,
     rename_agricultural_ministry,
     unify_media_names,
-    add_policy_buckets_col
+    add_policy_buckets_col,
+    load_data_into_db
 )
 
 def test_convert_to_half_years():
@@ -67,8 +70,8 @@ def test_unify_media_names(mock_read_csv):
 @patch("pandas.read_csv")
 def test_add_policy_buckets_col(mock_read_csv):
     mock_ministers = pd.DataFrame({
-        'Ministry': ['Min A', 'Min B'],
-        'Bucket': ['Bucket A', 'Bucket B']
+        'ministry': ['Min A', 'Min B'],
+        'bucket': ['Bucket A', 'Bucket B']
     })
     mock_read_csv.return_value = mock_ministers
     
@@ -80,3 +83,27 @@ def test_add_policy_buckets_col(mock_read_csv):
     
     assert 'policy_bucket' in result.columns
     assert result['policy_bucket'].tolist() == ['Bucket A', 'Bucket B', 'Bucket A']
+
+def test_load_data_into_db_keeps_schema(tmp_path):
+    temp_db_path = tmp_path / "test_db.db"
+    df = pd.DataFrame({
+        'ministry': ['Min A', 'Min B'],
+        'medium': ['ORF', 'Kurier'],
+        'euro': [100.0, 200.0],
+        'half-year': ['20221', '20222'],
+        'policy_bucket': ['Bucket A', 'Bucket B']
+    })
+
+    with patch("setup_db.DB_PATH", temp_db_path), patch("data_parser.DB_PATH", temp_db_path):
+        setup_db.main()
+        # Loading twice must replace the data instead of duplicating it
+        load_data_into_db(df)
+        load_data_into_db(df)
+
+    con = sqlite3.connect(temp_db_path)
+    columns = [info[1] for info in con.execute("PRAGMA table_info(media_spending)").fetchall()]
+    rows = con.execute("SELECT ministry, medium, euro, half_year, policy_bucket FROM media_spending").fetchall()
+    con.close()
+
+    assert columns == ['id', 'ministry', 'medium', 'euro', 'half_year', 'policy_bucket']
+    assert rows == [('Min A', 'ORF', 100.0, 20221, 'Bucket A'), ('Min B', 'Kurier', 200.0, 20222, 'Bucket B')]

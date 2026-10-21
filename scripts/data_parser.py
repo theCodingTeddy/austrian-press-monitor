@@ -140,22 +140,28 @@ def merge_rtr_tables(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
 def load_data_into_db(df: pd.DataFrame) -> None:
     """
     Loads the cleaned and merged data frame into the SQLite database.
+    Existing spending data is replaced, while the table schema from setup_db is kept.
     """
 
+    con = None
     try:
         # Connect to the database
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
-        
-        # Load dataframe into SQLite database
-        df.to_sql('media_spending', con, if_exists='replace', index=False)
+
+        # Clear the table instead of replacing it, as to_sql would otherwise drop the schema defined in setup_db
+        cur.execute('DELETE FROM media_spending')
+
+        # Load dataframe into SQLite database, using the column names from setup_db
+        df.rename(columns={'half-year': 'half_year'}).to_sql('media_spending', con, if_exists='append', index=False)
         con.commit()
-        con.close()
+        logger.info('Media spending data loaded successfully.')
 
     except sqlite3.Error as e:
         logger.error(f'An error occured while loading spending data into the database: {e}')
-    
-    logger.info('Media spending data loaded successfully.')
+    finally:
+        if con is not None:
+            con.close()
 
 if __name__ == '__main__':
     main()

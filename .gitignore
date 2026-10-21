@@ -15,3 +15,5 @@ __pycache__/
 # IDEs
 .idea/
 .vscode/
+# Scraper progress
+data/news_scraper_progress.json
