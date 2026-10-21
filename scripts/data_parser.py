@@ -61,7 +61,7 @@ def remove_non_ministries(df: pd.DataFrame) -> pd.DataFrame:
 
 def convert_to_half_years(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Converts the given dataframe with quarterly data to a half-yearly one by summing the quarters up.
+    Converts the given dataframe with quarterly data to a half-yearly one by relabeling the corresponding entries.
     The dataframe must contain the columns: rechtstraeger, quartal, medium, euro
     """
 

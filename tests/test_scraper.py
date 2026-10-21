@@ -17,6 +17,7 @@ import setup_db
 import news_scraper
 from news_scraper import (
     is_valid_context,
+    contains_term,
     get_queries,
     get_query_key,
     load_progress,
@@ -24,7 +25,15 @@ from news_scraper import (
     request_pause,
     fetch_google_news_rss,
     load_and_prepare_data,
-    save_article_to_db
+    save_article_to_db,
+    build_query,
+    batch_terms,
+    is_in_date_range,
+    MAX_QUERY_LENGTH,
+    OUTLETS,
+    SAVED,
+    DUPLICATE,
+    INVALID
 )
 from schemas import MinisterSchema, SynonymSchema, NewsArticle
 
@@ -81,33 +90,53 @@ def make_rss(items):
 #------------------------- CONTEXT FILTER -------------------------#
 
 def test_is_valid_context_bmi_valid():
-    text = "Der Innenminister Karner hat heute die Polizei besucht."
+    text = "Das BMI hat heute bestätigt, dass Innenminister Karner die Polizei besucht."
     assert is_valid_context(text, "BMI") == True
-
+    
 def test_is_valid_context_bmi_invalid_health():
     text = "Ein hoher Body Mass Index (BMI) und Übergewicht sind schlecht für die Gesundheit."
     assert is_valid_context(text, "BMI") == False
 
 def test_is_valid_context_bmi_invalid_generic():
-    text = "Das ist ein komplett irrelevanter Text ohne Kontextwörter."
+    text = "Laut BMI ist das ein komplett irrelevanter Text ohne Kontextwörter."
     assert is_valid_context(text, "BMI") == False
-
+    
 def test_is_valid_context_bka_valid():
-    text = "Der Bundeskanzler gab heute eine Pressekonferenz."
+    text = "Das BKA teilte mit, dass der Bundeskanzler heute eine Pressekonferenz gibt."
     assert is_valid_context(text, "BKA") == True
-
+    
 def test_is_valid_context_bka_invalid():
     text = "Das BKA (Bundeskriminalamt in Deutschland) ermittelt."
     # Since none of the context words (bundeskanzler, regierung, kanzler, minister) are there, should be false
     assert is_valid_context(text, "BKA") == False
-
+    
 def test_is_valid_context_generic_term():
-    # Any text that doesn't trigger the explicit BMI/BKA exclusions should be valid
+    # Any text that contains the term and doesn't trigger the explicit BMI/BKA exclusions should be valid
     text = "Der Arbeitsminister plant neue Reformen."
     assert is_valid_context(text, "Arbeitsminister") == True
 
 def test_is_valid_context_empty_text():
     assert is_valid_context("", "Arbeitsminister") == False
+
+def test_is_valid_context_term_missing():
+    # Articles which do not mention the term at all are rejected, even if they would pass the context check
+    text = "Der Bundeskanzler gab heute eine Pressekonferenz."
+    assert is_valid_context(text, "Arbeitsminister") == False
+    assert is_valid_context(text, "BKA") == False
+
+def test_contains_term_case_insensitive_for_words():
+    assert contains_term("Das INNENMINISTERIUM teilte mit", "Innenministerium") == True
+    # Also matches inflected forms, which contain the term as part of a word
+    assert contains_term("Ein Sprecher des Innenministeriums", "Innenministerium") == True
+    assert contains_term("Klaudia Tanner besuchte die Truppe", "Klaudia Tanner") == True
+
+def test_contains_term_whole_word_for_abbreviations():
+    assert contains_term("Laut BMI gibt es neue Zahlen", "BMI") == True
+    assert contains_term("Ein BMF-Sprecher bestätigte", "BMF") == True
+    # Abbreviations must not match parts of other words or differently capitalized text
+    assert contains_term("Die BMIX-Gruppe", "BMI") == False
+    assert contains_term("Der bmi-Rechner zeigt das Gewicht", "BMI") == False
+    assert contains_term("Das BMLVS ist nicht gemeint", "BMLV") == False
 
 #------------------------- QUERY GENERATION -------------------------#
 
@@ -141,9 +170,45 @@ def test_get_queries_only_active_terms(ministers_df, synonyms_df):
 def test_get_queries_batches_are_sorted_and_limited(ministers_df, synonyms_df):
     queries = get_queries(ministers_df, synonyms_df, datetime.datetime(2020, 1, 1), datetime.datetime(2020, 1, 31))
     all_terms = [t for q in queries for t in q['terms']]
-    assert all(len(q['terms']) <= 5 for q in queries)
+    for site in OUTLETS.values():
+        assert all(len(build_query(site, q['terms'], q['start_str'], q['end_str'])) <= MAX_QUERY_LENGTH for q in queries)
     assert all_terms == sorted(all_terms)
     assert len(all_terms) == len(set(all_terms))
+
+def test_build_query():
+    query = build_query("orf.at", ["Karner", "BMI"], "2024-03-01", "2024-03-31")
+    # before: is exclusive, so the day after the end of the period is used
+    assert query == 'site:orf.at ("Karner" OR "BMI") after:2024-03-01 before:2024-04-01'
+
+def test_batch_terms_respects_max_length():
+    terms = [f"Bundesministerium für Testangelegenheiten Nummer {i}" for i in range(10)]
+    batches = batch_terms(terms, "2020-01-01", "2020-01-31")
+    longest_site = max(OUTLETS.values(), key=len)
+
+    assert len(batches) > 1
+    assert [t for b in batches for t in b] == terms
+    assert all(len(build_query(longest_site, b, "2020-01-01", "2020-01-31")) <= MAX_QUERY_LENGTH for b in batches)
+
+def test_batch_terms_combines_short_terms():
+    assert batch_terms(["BMI", "BMJ", "BMF"], "2020-01-01", "2020-01-31") == [["BMI", "BMJ", "BMF"]]
+
+def test_batch_terms_keeps_overlong_term_alone():
+    long_term = "x" * MAX_QUERY_LENGTH
+    assert batch_terms(["BMI", long_term, "BMJ"], "2020-01-01", "2020-01-31") == [["BMI"], [long_term], ["BMJ"]]
+
+@pytest.mark.parametrize("date, expected", [
+    ("2020-04-15 12:00:00", True),
+    ("2020-04-01 00:00:00", True),
+    ("2020-04-30 23:59:00", True),
+    # One day of tolerance on both sides, since RSS dates are in GMT
+    ("2020-03-31 23:30:00", True),
+    ("2020-05-01 00:30:00", True),
+    ("2020-03-30 12:00:00", False),
+    ("2023-06-15 12:00:00", False),
+    ("", True),
+])
+def test_is_in_date_range(date, expected):
+    assert is_in_date_range(date, "2020-04-01", "2020-04-30") == expected
 
 def test_get_queries_deterministic(ministers_df, synonyms_df):
     # Resuming relies on the queries being identical across runs, even if the input order changes
@@ -261,7 +326,7 @@ def test_news_article_invalid(field, value):
 
 def test_save_article_to_db(temp_db):
     article = {'headline': 'Titel', 'full_text': LONG_TEXT, 'date': '2024-03-19 07:00:00'}
-    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == True
+    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == SAVED
 
     con = sqlite3.connect(temp_db)
     rows = con.execute("SELECT medium, date, headline, full_text, url FROM news_articles").fetchall()
@@ -270,8 +335,8 @@ def test_save_article_to_db(temp_db):
 
 def test_save_article_to_db_ignores_duplicates(temp_db):
     article = {'headline': 'Titel', 'full_text': LONG_TEXT, 'date': ''}
-    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == True
-    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == False
+    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == SAVED
+    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == DUPLICATE
 
     con = sqlite3.connect(temp_db)
     assert con.execute("SELECT COUNT(*), MAX(date) FROM news_articles").fetchone() == (1, None)
@@ -279,7 +344,7 @@ def test_save_article_to_db_ignores_duplicates(temp_db):
 
 def test_save_article_to_db_rejects_invalid_article(temp_db):
     article = {'headline': 'Cookies', 'full_text': 'Bitte akzeptieren Sie Cookies.', 'date': ''}
-    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == False
+    assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == INVALID
 
     con = sqlite3.connect(temp_db)
     assert con.execute("SELECT COUNT(*) FROM news_articles").fetchone() == (0,)

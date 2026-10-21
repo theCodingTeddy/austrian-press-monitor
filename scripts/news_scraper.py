@@ -6,6 +6,7 @@ from pydantic import ValidationError
 import sqlite3
 from typing import Tuple, List, Dict, Set, Optional
 import argparse
+from collections import Counter
 import email.utils
 import random
 import signal
@@ -20,7 +21,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from playwright.sync_api import sync_playwright
 
-DRY_RUN = True
+DRY_RUN = False
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Student Research Project - Sentiment Analysis of Austrian Media"
 
 MINISTERS_CSV = DATA_DIR / 'synonym_lists' / 'ministers.csv'
@@ -30,6 +31,10 @@ PROGRESS_FILE = DATA_DIR / 'news_scraper_progress.json'
 # Google News RSS is used for discovery, as the regular Google search throws CAPTCHAs at automated clients
 RSS_URL = "https://news.google.com/rss/search?q={query}&hl=de&gl=AT&ceid=AT:de"
 RSS_MAX_RESULTS = 100
+# Google ignores the end of longer queries (from roughly 200 characters on), which drops the after:/before: operators
+MAX_QUERY_LENGTH = 180
+# RSS dates are in GMT, so articles published shortly after midnight might appear as the previous day
+DATE_TOLERANCE = datetime.timedelta(days=1)
 CONSENT_BUTTON_TEXT = re.compile(r"^\s*(Accept all|Alle akzeptieren|I agree|Zustimmen|Einverstanden|Akzeptieren)\s*$", re.IGNORECASE)
 
 OUTLETS = {
@@ -42,6 +47,12 @@ OUTLETS = {
     "Der Standard": "derstandard.at",
     "Die Presse": "diepresse.com"
 }
+
+# Possible results of save_article_to_db
+SAVED = 'saved'
+DUPLICATE = 'duplicate'
+INVALID = 'invalid'
+DB_ERROR = 'db_error'
 
 pause_requested = False
 
@@ -75,8 +86,7 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
     logger.info(f"Generated {len(queries)} total query batches.")
 
     done = set() if reset or dry_run else load_progress()
-    saved_count = 0
-    valid_count = 0
+    stats = Counter()
     tasks = [(outlet_name, site_domain, q) for outlet_name, site_domain in outlets.items() for q in queries]
     pending = [t for t in tasks if get_query_key(t[1], t[2]) not in done]
     if max_queries is not None:
@@ -109,30 +119,38 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
                     if pause_requested:
                         break
 
+                    # Safety net in case Google ignores the date range of the query
+                    if not is_in_date_range(rss_date, q['start_str'], q['end_str']):
+                        logger.info(f" +--+--- Skipped article from {rss_date} outside of the searched period: {rss_headline[:50]}")
+                        stats['outside_period'] += 1
+                        continue
+
                     logger.info(f" +--+--- Extracting: {link}")
                     content = extract_article(link, page)
 
-                    if content and content.get('full_text'):
+                    if not content or not content.get('full_text'):
+                        stats['extraction_failed'] += 1
+                    else:
                         if site_domain not in urllib.parse.urlparse(content['url']).netloc:
                             logger.info(f" +--+--- Skipped article from another domain: {content['url']}")
+                            stats['other_domain'] += 1
                             continue
 
                         content['headline'] = content.get('headline') or rss_headline
                         content['date'] = content.get('date') or rss_date
 
-                        valid = False
-                        for term in terms:
-                            if is_valid_context(content['full_text'], term):
-                                valid = True
-                                break
+                        # The search term might only occur in the headline, so it is checked as well
+                        text = f"{content['headline']}\n{content['full_text']}"
+                        valid = any(is_valid_context(text, term) for term in terms)
 
                         if valid:
                             logger.info(f" +--+--- Valid article found: {content.get('headline', '')[:50]}")
-                            valid_count += 1
-                            if not dry_run and save_article_to_db(outlet_name, content['url'], content):
-                                saved_count += 1
+                            stats['valid'] += 1
+                            if not dry_run:
+                                stats[save_article_to_db(outlet_name, content['url'], content)] += 1
                         else:
                             logger.info(f" +--+--- Article rejected by context filter: {content['url']}")
+                            stats['context_filter'] += 1
 
                 # An interrupted query is not marked as done, so it is repeated in full when resuming
                 if pause_requested:
@@ -150,10 +168,13 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
             except Exception as e:
                 logger.debug(f"Could not close browser cleanly: {e}")
 
+    logger.info(f"Skipped {stats['outside_period']} links outside of the searched period, {stats['extraction_failed']} could not be extracted, "
+                f"{stats['other_domain']} were from another domain and {stats['context_filter']} were rejected by the context filter.")
     if dry_run:
-        logger.info(f"Found {valid_count} valid articles. Nothing was saved, because DRY RUN is enabled (use --no-dry-run to save).")
+        logger.info(f"Found {stats['valid']} valid articles. Nothing was saved, because DRY RUN is enabled (use --no-dry-run to save).")
     else:
-        logger.info(f"Found {valid_count} valid articles, {saved_count} of them were new and saved to the DB.")
+        logger.info(f"Found {stats['valid']} valid articles: {stats[SAVED]} saved, {stats[DUPLICATE]} already in the DB, "
+                    f"{stats[INVALID]} failed validation, {stats[DB_ERROR]} could not be saved due to a DB error.")
 
     if pause_requested:
         logger.info(f"Search paused. Progress saved to {PROGRESS_FILE}, run the script again to resume.")
@@ -212,21 +233,65 @@ def get_queries(df_min: pd.DataFrame, df_syn: pd.DataFrame, start_date: datetime
             terms = set(active_min['name'].unique()).union(set(active_syn['synonym'].unique()))
             terms = sorted(terms)
 
-            # Batch terms to avoid Google search limits
-            batch_size = 5
-            for i in range(0, len(terms), batch_size):
-                batch = terms[i:i+batch_size]
-                if batch:
-                    queries.append({
-                        'bucket': bucket,
-                        'start_str': current.strftime("%Y-%m-%d"),
-                        'end_str': next_month.strftime("%Y-%m-%d"),
-                        'terms': batch
-                    })
+            start_str = current.strftime("%Y-%m-%d")
+            end_str = next_month.strftime("%Y-%m-%d")
+            for batch in batch_terms(terms, start_str, end_str):
+                queries.append({
+                    'bucket': bucket,
+                    'start_str': start_str,
+                    'end_str': end_str,
+                    'terms': batch
+                })
 
         current = next_month + datetime.timedelta(days=1)
 
     return queries
+
+
+def build_query(site: str, terms: List[str], after: str, before: str) -> str:
+    """
+    Builds a Google News search query for the given site, terms and period (both dates inclusive).
+    """
+
+    # Google's before: operator is exclusive, so we move it by one day to include the last day
+    before_exclusive = (datetime.datetime.strptime(before, "%Y-%m-%d") + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    terms_query = " OR ".join([f'"{t}"' for t in terms])
+    return f'site:{site} ({terms_query}) after:{after} before:{before_exclusive}'
+
+
+def batch_terms(terms: List[str], after: str, before: str) -> List[List[str]]:
+    """
+    Splits the terms into batches whose queries stay below MAX_QUERY_LENGTH for every outlet,
+    since Google drops the date range of longer queries.
+    """
+
+    longest_site = max(OUTLETS.values(), key=len)
+    batches = []
+    batch = []
+    for term in terms:
+        if batch and len(build_query(longest_site, batch + [term], after, before)) > MAX_QUERY_LENGTH:
+            batches.append(batch)
+            batch = []
+        batch.append(term)
+        if len(batch) == 1 and len(build_query(longest_site, batch, after, before)) > MAX_QUERY_LENGTH:
+            logger.warning(f"Term is too long to stay below {MAX_QUERY_LENGTH} characters, the date range might be ignored: {term}")
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def is_in_date_range(date: str, start: str, end: str) -> bool:
+    """
+    Checks if the given date (YYYY-MM-DD HH:MM:SS) lies within the period from start to end (both YYYY-MM-DD),
+    allowing for DATE_TOLERANCE on both sides. Returns True if the date is missing.
+    """
+
+    if not date:
+        return True
+    dt = datetime.datetime.strptime(date[:10], "%Y-%m-%d")
+    start_dt = datetime.datetime.strptime(start, "%Y-%m-%d") - DATE_TOLERANCE
+    end_dt = datetime.datetime.strptime(end, "%Y-%m-%d") + DATE_TOLERANCE
+    return start_dt <= dt <= end_dt
 
 
 def get_query_key(site: str, query: Dict) -> str:
@@ -290,10 +355,7 @@ def fetch_google_news_rss(site: str, terms: List[str], after: str, before: str) 
         A list of (link, headline, date) tuples, where headline and date come from the RSS feed.
     """
 
-    # Google's before: operator is exclusive, so we move it by one day to include the last day
-    before_exclusive = (datetime.datetime.strptime(before, "%Y-%m-%d") + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-    terms_query = " OR ".join([f'"{t}"' for t in terms])
-    query = f'site:{site} ({terms_query}) after:{after} before:{before_exclusive}'
+    query = build_query(site, terms, after, before)
     url = RSS_URL.format(query=urllib.parse.quote_plus(query))
 
     results = []
@@ -362,12 +424,23 @@ def wait_while_url_contains(page, text: str, timeout: float = 15):
         page.wait_for_timeout(250)
 
 
-def is_valid_context(text: str, keyword: str) -> bool:
+def contains_term(text: str, keyword: str) -> bool:
     """
-    Checks if the given text is contextually relevant to the given keyword.
+    Checks if the given keyword occurs in the text. Abbreviations (e.g. "BMI") have to match a whole word
+    with the exact capitalization, while all other terms are matched case-insensitively, also as part of
+    a word (e.g. "Innenministerium" in "Innenministeriums").
     """
 
-    if not text:
+    if keyword.isupper():
+        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+    return keyword.lower() in text.lower()
+
+def is_valid_context(text: str, keyword: str) -> bool:
+    """
+    Checks if the given keyword occurs in the text and if the text is contextually relevant to it.
+    """
+
+    if not text or not contains_term(text, keyword):
         return False
 
     text_lower = text.lower()
@@ -448,10 +521,10 @@ def extract_article(url: str, page) -> Dict[str, str]:
 
     return {}
 
-def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> bool:
+def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> str:
     """
     Validates the provided article data (including outlet, URL, headline, body text and date) and saves it to the database.
-    Returns True if a new article was saved.
+    Returns SAVED, DUPLICATE (if the URL already exists), INVALID (if the validation failed) or DB_ERROR.
     """
 
     try:
@@ -464,9 +537,9 @@ def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> b
         })
     except ValidationError as e:
         logger.warning(f"Article failed validation and was not saved: {url}\n{e}")
-        return False
+        return INVALID
 
-    saved = False
+    result = DB_ERROR
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -485,18 +558,20 @@ def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> b
 
         if cursor.rowcount > 0:
             logger.info(f"Saved new article to DB: {url}")
-            saved = True
+            result = SAVED
         else:
-            logger.debug(f"Article already exists in DB: {url}")
+            logger.info(f"Article already exists in DB: {url}")
+            result = DUPLICATE
 
         conn.commit()
     except Exception as e:
         logger.error(f"Failed to save article to DB: {e}")
+        result = DB_ERROR
     finally:
         if conn is not None:
             conn.close()
 
-    return saved
+    return result
 
 
 if __name__ == "__main__":
