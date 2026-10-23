@@ -39,8 +39,15 @@ def main():
             date TEXT,
             headline TEXT,
             full_text TEXT NOT NULL,
-            url TEXT UNIQUE NOT NULL
+            url TEXT UNIQUE NOT NULL,
+            section TEXT
         )''')
+
+        # Databases created before the section column was introduced need to be migrated
+        columns = [info[1] for info in cur.execute('PRAGMA table_info(news_articles)').fetchall()]
+        if 'section' not in columns:
+            cur.execute('ALTER TABLE news_articles ADD COLUMN section TEXT')
+            logger.info('Added column section to table news_articles.')
 
         con.commit()
         con.close()

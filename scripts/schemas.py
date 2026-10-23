@@ -51,8 +51,9 @@ class NewsArticle(BaseModel):
     headline: Optional[str] = None
     # Shorter texts are usually cookie banners or paywall teasers
     full_text: str = Field(min_length=200)
+    section: Optional[str] = None
 
-    @field_validator('date', 'headline', mode='before')
+    @field_validator('date', 'headline', 'section', mode='before')
     @classmethod
     def empty_to_none(cls, value):
         return value or None

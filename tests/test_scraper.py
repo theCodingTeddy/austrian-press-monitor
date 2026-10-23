@@ -29,6 +29,8 @@ from news_scraper import (
     build_query,
     batch_terms,
     is_in_date_range,
+    choose_date,
+    EXCLUDED_URLS,
     MAX_QUERY_LENGTH,
     OUTLETS,
     SAVED,
@@ -210,6 +212,28 @@ def test_batch_terms_keeps_overlong_term_alone():
 def test_is_in_date_range(date, expected):
     assert is_in_date_range(date, "2020-04-01", "2020-04-30") == expected
 
+@pytest.mark.parametrize("page_date, rss_date, expected", [
+    ("2020-04-15 10:00:00", "2020-04-15 08:00:00", "2020-04-15 10:00:00"),  # page date in period is kept
+    ("2018-01-01 00:00:00", "2020-04-15 08:00:00", "2020-04-15 08:00:00"),  # implausible page date is replaced
+    ("", "2020-04-15 08:00:00", "2020-04-15 08:00:00"),                     # missing page date
+    ("2018-01-01 00:00:00", "", "2018-01-01 00:00:00"),                     # no alternative available
+])
+def test_choose_date(page_date, rss_date, expected):
+    assert choose_date(page_date, rss_date, "2020-04-01", "2020-04-30") == expected
+
+@pytest.mark.parametrize("url, excluded", [
+    ("https://tv.orf.at/program/orf1/walkingons134.html", True),
+    ("https://stars.orf.at/Star/Martin%20Traxl/Moderation/216", True),
+    ("https://www.heute.at/g/bundeskanzler-karl-nehammer-und-seine-ehefrau-katharina-100201930", True),
+    ("https://www.heute.at/t/elke-kahr-100268208", True),
+    ("https://orf.at/stories/3415928/", False),
+    ("https://wien.orf.at/stories/3188492/", False),
+    ("https://www.heute.at/s/so-sehen-die-neuen-euro-muenzen-aus-120152938", False),
+    ("https://www.krone.at/4002448", False),
+])
+def test_excluded_urls(url, excluded):
+    assert bool(EXCLUDED_URLS.match(url)) == excluded
+
 def test_get_queries_deterministic(ministers_df, synonyms_df):
     # Resuming relies on the queries being identical across runs, even if the input order changes
     args = (datetime.datetime(2020, 1, 1), datetime.datetime(2020, 6, 30))
@@ -271,9 +295,25 @@ def test_fetch_google_news_rss_includes_last_day(mock_urlopen):
     assert "after%3A2024-03-01" in requested_url
     assert "site%3Aorf.at" in requested_url
 
-@patch("urllib.request.urlopen", side_effect=OSError("network down"))
-def test_fetch_google_news_rss_network_error(mock_urlopen):
+@patch("news_scraper.wait", return_value=True)
+@patch("urllib.request.urlopen", side_effect=OSError("HTTP Error 503: Service Unavailable"))
+def test_fetch_google_news_rss_gives_up_after_retries(mock_urlopen, mock_wait):
+    # A failed fetch must not look like a search without results, otherwise it would be marked as done
+    assert fetch_google_news_rss("orf.at", ["Karner"], "2024-03-01", "2024-03-31") is None
+    assert mock_urlopen.call_count == len(news_scraper.RSS_RETRY_DELAYS) + 1
+
+@patch("news_scraper.wait", return_value=True)
+@patch("urllib.request.urlopen")
+def test_fetch_google_news_rss_recovers_after_retry(mock_urlopen, mock_wait):
+    mock_urlopen.side_effect = [OSError("HTTP Error 503: Service Unavailable"), make_rss([])]
     assert fetch_google_news_rss("orf.at", ["Karner"], "2024-03-01", "2024-03-31") == []
+    assert mock_wait.call_count == 1
+
+@patch("news_scraper.wait", return_value=False)
+@patch("urllib.request.urlopen", side_effect=OSError("HTTP Error 503: Service Unavailable"))
+def test_fetch_google_news_rss_stops_retrying_on_pause(mock_urlopen, mock_wait):
+    assert fetch_google_news_rss("orf.at", ["Karner"], "2024-03-01", "2024-03-31") is None
+    assert mock_urlopen.call_count == 1
 
 #------------------------- DATA VALIDATION -------------------------#
 
@@ -325,13 +365,29 @@ def test_news_article_invalid(field, value):
 #------------------------- DATABASE -------------------------#
 
 def test_save_article_to_db(temp_db):
-    article = {'headline': 'Titel', 'full_text': LONG_TEXT, 'date': '2024-03-19 07:00:00'}
+    article = {'headline': 'Titel', 'full_text': LONG_TEXT, 'date': '2024-03-19 07:00:00', 'section': 'Politik'}
     assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == SAVED
 
     con = sqlite3.connect(temp_db)
-    rows = con.execute("SELECT medium, date, headline, full_text, url FROM news_articles").fetchall()
+    rows = con.execute("SELECT medium, date, headline, full_text, url, section FROM news_articles").fetchall()
     con.close()
-    assert rows == [("ORF", "2024-03-19 07:00:00", "Titel", LONG_TEXT.strip(), "https://orf.at/stories/1")]
+    assert rows == [("ORF", "2024-03-19 07:00:00", "Titel", LONG_TEXT.strip(), "https://orf.at/stories/1", "Politik")]
+
+def test_setup_db_adds_section_column_to_old_db(tmp_path):
+    db_path = tmp_path / "old_db.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE news_articles(id INTEGER PRIMARY KEY AUTOINCREMENT, medium TEXT NOT NULL, date TEXT, "
+                "headline TEXT, full_text TEXT NOT NULL, url TEXT UNIQUE NOT NULL)")
+    con.execute("INSERT INTO news_articles (medium, full_text, url) VALUES ('ORF', 'Text', 'https://orf.at/stories/1')")
+    con.commit()
+    con.close()
+
+    with patch("setup_db.DB_PATH", db_path):
+        setup_db.main()
+
+    con = sqlite3.connect(db_path)
+    assert con.execute("SELECT url, section FROM news_articles").fetchall() == [("https://orf.at/stories/1", None)]
+    con.close()
 
 def test_save_article_to_db_ignores_duplicates(temp_db):
     article = {'headline': 'Titel', 'full_text': LONG_TEXT, 'date': ''}
@@ -339,7 +395,7 @@ def test_save_article_to_db_ignores_duplicates(temp_db):
     assert save_article_to_db("ORF", "https://orf.at/stories/1", article) == DUPLICATE
 
     con = sqlite3.connect(temp_db)
-    assert con.execute("SELECT COUNT(*), MAX(date) FROM news_articles").fetchone() == (1, None)
+    assert con.execute("SELECT COUNT(*), MAX(date), MAX(section) FROM news_articles").fetchone() == (1, None, None)
     con.close()
 
 def test_save_article_to_db_rejects_invalid_article(temp_db):

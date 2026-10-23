@@ -35,6 +35,11 @@ RSS_MAX_RESULTS = 100
 MAX_QUERY_LENGTH = 180
 # RSS dates are in GMT, so articles published shortly after midnight might appear as the previous day
 DATE_TOLERANCE = datetime.timedelta(days=1)
+# Google temporarily blocks clients after many searches (HTTP 503), so failed requests are retried after these waiting times (in seconds)
+RSS_RETRY_DELAYS = [60, 300, 900]
+# Pages which are not news articles: ORF subdomains for the TV programme, the company itself, its streaming platform, presenter
+# profiles and teletext, as well as image, gallery, tag and author pages of Heute (its articles are located under /s/)
+EXCLUDED_URLS = re.compile(r"^https?://(tv|der|zukunft|on|stars|text)\.orf\.at/|^https?://www\.heute\.at/[agit]/")
 CONSENT_BUTTON_TEXT = re.compile(r"^\s*(Accept all|Alle akzeptieren|I agree|Zustimmen|Einverstanden|Akzeptieren)\s*$", re.IGNORECASE)
 
 OUTLETS = {
@@ -113,6 +118,10 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
                     after=q['start_str'],
                     before=q['end_str']
                 )
+                if links is None:
+                    logger.error("Google News could not be reached, pausing the search. Run the script again later to resume.")
+                    pause_requested = True
+                    break
                 logger.info(f" +-- Found {len(links)} links")
 
                 for link, rss_headline, rss_date in links:
@@ -131,13 +140,18 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
                     if not content or not content.get('full_text'):
                         stats['extraction_failed'] += 1
                     else:
-                        if site_domain not in urllib.parse.urlparse(content['url']).netloc:
+                        host = urllib.parse.urlparse(content['url']).netloc
+                        if site_domain not in host:
                             logger.info(f" +--+--- Skipped article from another domain: {content['url']}")
                             stats['other_domain'] += 1
                             continue
+                        if EXCLUDED_URLS.match(content['url']):
+                            logger.info(f" +--+--- Skipped page without news content: {content['url']}")
+                            stats['excluded_url'] += 1
+                            continue
 
                         content['headline'] = content.get('headline') or rss_headline
-                        content['date'] = content.get('date') or rss_date
+                        content['date'] = choose_date(content.get('date'), rss_date, q['start_str'], q['end_str'])
 
                         # The search term might only occur in the headline, so it is checked as well
                         text = f"{content['headline']}\n{content['full_text']}"
@@ -169,7 +183,7 @@ def main(max_queries: Optional[int] = None, reset: bool = False, dry_run: bool =
                 logger.debug(f"Could not close browser cleanly: {e}")
 
     logger.info(f"Skipped {stats['outside_period']} links outside of the searched period, {stats['extraction_failed']} could not be extracted, "
-                f"{stats['other_domain']} were from another domain and {stats['context_filter']} were rejected by the context filter.")
+                f"{stats['other_domain']} were from another domain, {stats['excluded_url']} had no news content and {stats['context_filter']} were rejected by the context filter.")
     if dry_run:
         logger.info(f"Found {stats['valid']} valid articles. Nothing was saved, because DRY RUN is enabled (use --no-dry-run to save).")
     else:
@@ -294,6 +308,20 @@ def is_in_date_range(date: str, start: str, end: str) -> bool:
     return start_dt <= dt <= end_dt
 
 
+def choose_date(page_date: str, rss_date: str, start: str, end: str) -> str:
+    """
+    Returns the publication date found on the article page if it lies within the searched period, and the date
+    from the RSS feed otherwise. Pages without a proper date (e.g. TV programme pages) can make trafilatura fall back
+    to a year mentioned somewhere on the page, which then turns into January 1st of that year.
+    """
+
+    if page_date and is_in_date_range(page_date, start, end):
+        return page_date
+    if page_date and rss_date:
+        logger.info(f" +--+--- Date {page_date} from the page is outside of the searched period, using {rss_date} from the RSS feed instead")
+    return rss_date or page_date
+
+
 def get_query_key(site: str, query: Dict) -> str:
     """
     Returns a string that uniquely identifies a search of the given site with the given query.
@@ -340,7 +368,20 @@ def request_pause(_signum, _frame):
     logger.warning("Pause requested, stopping after the current article. Press Ctrl+C again to abort immediately.")
 
 
-def fetch_google_news_rss(site: str, terms: List[str], after: str, before: str) -> List[Tuple[str, str, str]]:
+def wait(seconds: float) -> bool:
+    """
+    Sleeps for the given number of seconds, but stops early if a pause was requested. Returns False in that case.
+    """
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if pause_requested:
+            return False
+        time.sleep(min(1, end - time.monotonic()))
+    return not pause_requested
+
+
+def fetch_google_news_rss(site: str, terms: List[str], after: str, before: str) -> Optional[List[Tuple[str, str, str]]]:
     """
     Searches Google News RSS for news articles. Unlike the regular Google search, the RSS feed does not
     throw CAPTCHAs. The returned links point to news.google.com and redirect to the actual article.
@@ -352,7 +393,8 @@ def fetch_google_news_rss(site: str, terms: List[str], after: str, before: str) 
         before: The end date for news articles (inclusive).
 
     Returns:
-        A list of (link, headline, date) tuples, where headline and date come from the RSS feed.
+        A list of (link, headline, date) tuples, where headline and date come from the RSS feed,
+        or None if the feed could not be fetched, even after retrying.
     """
 
     query = build_query(site, terms, after, before)
@@ -360,12 +402,20 @@ def fetch_google_news_rss(site: str, terms: List[str], after: str, before: str) 
 
     results = []
     req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            root = ET.fromstring(response.read())
-    except Exception as e:
-        logger.error(f"RSS fetch failed for {terms} on {site} [{after} to {before}]: {e}")
-        return results
+    root = None
+    for delay in [0] + RSS_RETRY_DELAYS:
+        if delay:
+            logger.warning(f"Retrying in {delay // 60} minute(s)...")
+            if not wait(delay):
+                return None
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                root = ET.fromstring(response.read())
+            break
+        except Exception as e:
+            logger.error(f"RSS fetch failed for {terms} on {site} [{after} to {before}]: {e}")
+    if root is None:
+        return None
 
     items = root.findall('.//item')
     if len(items) >= RSS_MAX_RESULTS:
@@ -465,7 +515,7 @@ def is_valid_context(text: str, keyword: str) -> bool:
 def extract_article(url: str, page) -> Dict[str, str]:
     """
     Opens a Google News link with Playwright, follows the redirect to the newspaper's website (accepting
-    cookie dialogs on the way) and returns a dict containing the final URL, headline, full text and date.
+    cookie dialogs on the way) and returns a dict containing the final URL, headline, full text, date and section.
     If the extraction fails, it returns an empty dict.
     """
 
@@ -514,7 +564,9 @@ def extract_article(url: str, page) -> Dict[str, str]:
                 "url": final_url,
                 "headline": data.get('title') or '',
                 "full_text": data.get('text') or '',
-                "date": data.get('date') or ''
+                "date": data.get('date') or '',
+                # Read from the page's metadata (e.g. "Politik"). Not every outlet provides it, the ORF for example does not
+                "section": data.get('categories') or ''
             }
         except Exception as e:
             logger.error(f"Failed to parse Trafilatura JSON for {final_url}: {e}")
@@ -523,7 +575,7 @@ def extract_article(url: str, page) -> Dict[str, str]:
 
 def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> str:
     """
-    Validates the provided article data (including outlet, URL, headline, body text and date) and saves it to the database.
+    Validates the provided article data (including outlet, URL, headline, body text, date and section) and saves it to the database.
     Returns SAVED, DUPLICATE (if the URL already exists), INVALID (if the validation failed) or DB_ERROR.
     """
 
@@ -533,7 +585,8 @@ def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> s
             'url': url,
             'date': article_data.get('date'),
             'headline': article_data.get('headline'),
-            'full_text': article_data.get('full_text', '')
+            'full_text': article_data.get('full_text', ''),
+            'section': article_data.get('section')
         })
     except ValidationError as e:
         logger.warning(f"Article failed validation and was not saved: {url}\n{e}")
@@ -546,14 +599,15 @@ def save_article_to_db(outlet: str, url: str, article_data: Dict[str, str]) -> s
         cursor = conn.cursor()
 
         cursor.execute('''
-        INSERT OR IGNORE INTO news_articles (medium, date, headline, full_text, url)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO news_articles (medium, date, headline, full_text, url, section)
+        VALUES (?, ?, ?, ?, ?, ?)
         ''', (
             article.medium,
             article.date,
             article.headline,
             article.full_text,
-            str(article.url)
+            str(article.url),
+            article.section
         ))
 
         if cursor.rowcount > 0:
