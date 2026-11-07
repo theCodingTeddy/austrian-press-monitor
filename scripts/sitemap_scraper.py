@@ -505,9 +505,11 @@ def check_article(conn: sqlite3.Connection, medium: str, cfg: Dict, url: str, la
         return EXCLUDED
 
     date = content.get('date') or normalize_lastmod(lastmod)
+    if not date:
+        return NO_DATE
     try:
         day = datetime.date.fromisoformat(date[:10])
-    except (TypeError, ValueError):
+    except ValueError:
         return NO_DATE
     if day not in terms_by_day:
         return OUTSIDE_PERIOD
