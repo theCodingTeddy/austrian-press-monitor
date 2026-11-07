@@ -543,6 +543,14 @@ def extract_article(url: str, page) -> Dict[str, str]:
         logger.error(f"Failed to load {url}: {e}")
         return {}
 
+    return parse_article(html, final_url)
+
+def parse_article(html: str, final_url: str) -> Dict[str, str]:
+    """
+    Extracts headline, full text, date and section from the HTML of an article page with trafilatura.
+    Returns a dict containing these and the URL, or an empty dict if the extraction fails.
+    """
+
     result = trafilatura.extract(
         html,
         url=final_url,
